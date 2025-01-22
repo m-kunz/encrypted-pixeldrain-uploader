@@ -5,8 +5,38 @@ import threading
 import queue
 import sys
 import requests
+import yaml
 
 
+# from https://stackoverflow.com/questions/37310718/mutually-exclusive-option-groups-in-python-click
+from click import Option, UsageError
+class MutuallyExclusiveOption(Option):
+    def __init__(self, *args, **kwargs):
+        self.mutually_exclusive = set(kwargs.pop('mutually_exclusive', []))
+        help = kwargs.get('help', '')
+        if self.mutually_exclusive:
+            ex_str = ', '.join(self.mutually_exclusive)
+            kwargs['help'] = help + (
+                ' NOTE: This argument is mutually exclusive with '
+                ' arguments: [' + ex_str + '].'
+            )
+        super(MutuallyExclusiveOption, self).__init__(*args, **kwargs)
+
+    def handle_parse_result(self, ctx, opts, args):
+        if self.mutually_exclusive.intersection(opts) and self.name in opts:
+            raise UsageError(
+                "Illegal usage: `{}` is mutually exclusive with "
+                "arguments `{}`.".format(
+                    self.name,
+                    ', '.join(self.mutually_exclusive)
+                )
+            )
+
+        return super(MutuallyExclusiveOption, self).handle_parse_result(
+            ctx,
+            opts,
+            args
+        )
 
 
 class WriteableQueue(queue.Queue):
@@ -35,18 +65,38 @@ def post_request(iterable,name,apikey):
 
 
 @click.command()
-@click.option('--passphrase', default="iSbyHu2SNRDV2GGTcHadcdscecg8nZR4S3Tsk", help='GPG symmetric passphrase')
-@click.option('--name',default="file", help='Filename for pixeldrain')
-@click.option('--apikey',default="5ecf0f8e-e7bb-4fba-ac3a-cdb9d0e661ae", help='API key for pixeldrain')
 
-def upload(passphrase, name,apikey):
-    """Wrapper for gpg and wget to upload files to pixeldrain encrypted, expects file on stdin."""
+@click.option('-n', '--name',default="file", help='Filename for pixeldrain')
+@click.option('-k', '--apikey',cls=MutuallyExclusiveOption,mutually_exclusive=["secrets"], help='API key for pixeldrain')
+@click.option('-p', '--passphrase',cls=MutuallyExclusiveOption,mutually_exclusive=["secrets"], help='GPG symmetric passphrase')
+@click.option('-s', '--secrets',type=click.File(mode='r'),cls=MutuallyExclusiveOption, mutually_exclusive=["apikey","passphrase"],help="yaml file, can contain apikey and passphrase")
+@click.argument('file', type=click.File(mode="rb"))
+
+def upload(passphrase, name,apikey,file,secrets):
+    """Wrapper for gpg and the pixeldrain API to upload files to pixeldrain encrypted, provide file to upload as argument, - to use stdin"""
+    
+    if(secrets):
+        s=yaml.safe_load(secrets)
+        if "apikey" in s.keys():
+            apikey=s["apikey"]
+        if "passphrase" in s.keys():
+            passphrase=s["passphrase"]
+    if not (apikey and passphrase):
+        raise UsageError("Provide an API key and an encryption passphrase!")
+    
+    if(file):
+        input_stream=file
+        if name=="file" and file.name!="<stdin>":
+            name=file.name
+    else:
+        input_stream=sys.stdin
+    
     # quesize can be limited in case producing is faster then streaming
     q = WriteableQueue(100)
     t=threading.Thread(target=post_request, args=(q,name,apikey))
     t.start()
     gpg=subprocess.Popen(["gpg","--passphrase",passphrase,'--compress-algo', 'none',"--batch","--with-colons","--symmetric"],
-                         stdin=sys.stdin,
+                         stdin=input_stream,
                          stdout=subprocess.PIPE)
     
     for chunk in iter(lambda:gpg.stdout.read(1000000),b""):
