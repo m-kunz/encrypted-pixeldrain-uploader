@@ -13,4 +13,5 @@ Options:
   -s, --secrets FILENAME  yaml file, can contain apikey and passphrase NOTE:
                           This argument is mutually exclusive with  arguments:
                           [passphrase, apikey].
-  --help                  Show this message and exit.```
+  --help                  Show this message and exit.
+```
